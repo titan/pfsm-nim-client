@@ -1,0 +1,6 @@
+package pfsm-to-nim-client
+
+depends = contrib, pfsm
+main = NimClient
+executable = pfsm-to-nim-client
+

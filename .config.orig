@@ -1,0 +1,2 @@
+NAME=pfsm-to-nim-client
+BUILDDIR=/dev/shm/$(NAME-LINK)
