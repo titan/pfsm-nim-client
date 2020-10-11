@@ -31,25 +31,56 @@ toNim conf fsm
   where
     generateClient : String -> String -> Fsm -> String
     generateClient pre name fsm
-      = List.join "\n\n" [ generateImports
-                         , generateTypes pre name fsm.model
-                         , generateFetchLists pre name fsm.model fsm.states
-                         , generateEvents pre name fsm.events
-                         ]
+      = join "\n\n" $ List.filter nonblank [ generateImports
+                                           , generateTypes pre name fsm.model
+                                           , generateJsonToRecords pre name fsm.model
+                                           , generateFetchLists pre name fsm.model fsm.states
+                                           , generateEvents pre name fsm.events
+                                           ]
       where
         generateImports : String
         generateImports = "import hmac, httpclient, json, options, random, sequtils, strtabs, strutils, tables, test_helper, times"
 
         generateTypes : String -> String -> List Parameter -> String
         generateTypes pre name model
-          = List.join "\n" [ "type"
-                           , (indent indentDelta) ++ pre ++ "* = ref object of RootObj"
-                           , List.join "\n" $ map (generateParameter (indentDelta * 2)) (("fsmid", (TPrimType PTULong) , Nothing) :: model)
-                           ]
+          = let rks = liftRecords model in
+                join "\n" $ List.filter nonblank [ "type"
+                                                 , generateRecords indentDelta rks
+                                                 , (indent indentDelta) ++ pre ++ "* = ref object of RootObj"
+                                                 , List.join "\n" $ map (generateParameter (indentDelta * 2)) (("fsmid", (TPrimType PTULong) , Nothing) :: model)
+                                                 ]
           where
             generateParameter : Nat -> Parameter -> String
             generateParameter idt (n, t, _)
               = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+
+            generateRecords : Nat -> List Tipe -> String
+            generateRecords idt ts
+                = join "\n" $ filter nonblank $ map (generateRecord idt) ts
+              where
+                generateRecord : Nat -> Tipe -> String
+                generateRecord idt (TRecord n ps) = List.join "\n" [ (indent idt) ++ (camelize n) ++ "* = ref object of RootObj"
+                                                                   , join "\n" $ map (generateParameter (idt + indentDelta)) ps
+                                                                   ]
+                generateRecord idt _              = ""
+
+        generateJsonToRecords : String -> String -> List Parameter -> String
+        generateJsonToRecords pre name model
+          = let rks = liftRecords model in
+              join "\n\n" $ List.filter nonblank $ map (generateJsonToRecord pre name) rks
+          where
+            generateFromJson : Nat -> Parameter -> String
+            generateFromJson idt (n, t, _)
+            = (indent idt) ++ (toNimName n) ++ " = " ++ (toNimFromJson ("obj{\"" ++ n ++ "\"}") t)
+
+            generateJsonToRecord : String -> String -> Tipe -> String
+            generateJsonToRecord pre name (TRecord n ps)
+              = List.join "\n" [ "proc json_to_" ++ (toNimName n) ++ "(obj: JsonNode): " ++ (camelize n) ++ " ="
+                               , (indent indentDelta) ++ "let"
+                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) ps
+                               , (indent indentDelta) ++ "result = " ++ (camelize n) ++ "(" ++ (List.join ", " (map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) ps)) ++ ")"
+                               ]
+            generateJsonToRecord pre name _ = ""
 
         generateFetchLists : String -> String -> List Parameter -> List1 State -> String
         generateFetchLists pre name model states
