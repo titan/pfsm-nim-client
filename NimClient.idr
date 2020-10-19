@@ -26,20 +26,25 @@ indentDelta = 2
 toNim : AppConfig -> Fsm -> IO ()
 toNim conf fsm
   = let name = fsm.name
-        pre = camelize (toNimName name) in
-        putStrLn $ generateClient pre name fsm
+        pre = camelize name
+        refs = liftReferences fsm.model in
+        putStrLn $ generateClient pre name fsm refs
   where
-    generateClient : String -> String -> Fsm -> String
-    generateClient pre name fsm
-      = join "\n\n" $ List.filter nonblank [ generateImports
+    generateClient : String -> String -> Fsm -> List String -> String
+    generateClient pre name fsm refs
+      = join "\n\n" $ List.filter nonblank [ generateImports refs
                                            , generateTypes pre name fsm.model
                                            , generateJsonToRecords pre name fsm.model
+                                           , generateJsonToObject pre name fsm.model
                                            , generateFetchLists pre name fsm.model fsm.states
                                            , generateEvents pre name fsm.events
                                            ]
       where
-        generateImports : String
-        generateImports = "import hmac, httpclient, json, options, random, sequtils, strtabs, strutils, tables, test_helper, times"
+        generateImports : List String -> String
+        generateImports refs
+          = List.join "\n" [ "import hmac, httpclient, json, options, random, sequtils, strtabs, strutils, tables, test_helper, times"
+                           , List.join "\n" $ map (("import " ++) . toNimName) refs
+                           ]
 
         generateTypes : String -> String -> List Parameter -> String
         generateTypes pre name model
@@ -51,8 +56,10 @@ toNim conf fsm
                                                  ]
           where
             generateParameter : Nat -> Parameter -> String
-            generateParameter idt (n, t, _)
-              = (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
+            generateParameter idt (n, t, ms)
+              = case lookup "reference" ms of
+                     Just (MVString ref) => (indent idt) ++ (toNimName n) ++ "*: " ++ (camelize ref)
+                     _ => (indent idt) ++ (toNimName n) ++ "*: " ++ (toNimType t)
 
             generateRecords : Nat -> List Tipe -> String
             generateRecords idt ts
@@ -64,23 +71,35 @@ toNim conf fsm
                                                                    ]
                 generateRecord idt _              = ""
 
+        generateFromJson : Nat -> Parameter -> String
+        generateFromJson idt (n, t, ms)
+          = case lookup "reference" ms of
+                 Just (MVString ref) => (indent idt) ++ (toNimName n) ++ " = json_to_" ++ (toNimName ref) ++ "(obj{\"" ++ n ++ "\"})"
+                 _ => (indent idt) ++ (toNimName n) ++ " = " ++ (toNimFromJson ("obj{\"" ++ n ++ "\"}") t)
+
         generateJsonToRecords : String -> String -> List Parameter -> String
         generateJsonToRecords pre name model
           = let rks = liftRecords model in
               join "\n\n" $ List.filter nonblank $ map (generateJsonToRecord pre name) rks
           where
-            generateFromJson : Nat -> Parameter -> String
-            generateFromJson idt (n, t, _)
-            = (indent idt) ++ (toNimName n) ++ " = " ++ (toNimFromJson ("obj{\"" ++ n ++ "\"}") t)
-
             generateJsonToRecord : String -> String -> Tipe -> String
-            generateJsonToRecord pre name (TRecord n ps)
+            generateJsonToRecord pre name (TRecord n params)
               = List.join "\n" [ "proc json_to_" ++ (toNimName n) ++ "(obj: JsonNode): " ++ (camelize n) ++ " ="
                                , (indent indentDelta) ++ "let"
-                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) ps
-                               , (indent indentDelta) ++ "result = " ++ (camelize n) ++ "(" ++ (List.join ", " (map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) ps)) ++ ")"
+                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) params
+                               , (indent indentDelta) ++ "result = " ++ (camelize n) ++ "(" ++ (List.join ", " (map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) params)) ++ ")"
                                ]
             generateJsonToRecord pre name _ = ""
+
+        generateJsonToObject : String -> String -> List Parameter -> String
+        generateJsonToObject pre name params
+          = let params' = ("fsmid", TPrimType PTULong, Nothing) :: params in
+                List.join "\n" [ "proc json_to_" ++ (toNimName name) ++ "*(obj: JsonNode): " ++ pre ++ " ="
+                               , (indent indentDelta) ++ "let"
+                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) params'
+                               , (indent indentDelta) ++ "result = " ++ pre ++ "(" ++ (List.join ", " (map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) params')) ++ ")"
+
+                               ]
 
         generateFetchLists : String -> String -> List Parameter -> List1 State -> String
         generateFetchLists pre name model states
@@ -109,24 +128,12 @@ toNim conf fsm
                                , (indent (indentDelta * 3)) ++ "payload = respbody{\"payload\"}"
                                , (indent (indentDelta * 2)) ++ "if code == 200:"
                                , (indent (indentDelta * 3)) ++ "for e in payload{\"data\"}:"
-                               , (indent (indentDelta * 4)) ++ "let"
-                               , (indent (indentDelta * 5)) ++ "fsmid = " ++ (toNimFromJson ("e{\"fsmid\"}") (TPrimType PTString)) ++ ".parseBiggestUInt"
-                               , List.join "\n" $ map (generateParsingFromJson (indentDelta * 5)) model
-                               , (indent (indentDelta * 5) ++ (toNimName name) ++ " = " ++ pre ++ "(" ++ (generateInitialingObject (("fsmid", (TPrimType PTString) , Nothing) :: model)) ++ ")")
-                               , (indent (indentDelta * 4)) ++ "result.add(" ++ (toNimName name) ++ ")"
+                               , (indent (indentDelta * 4)) ++ "result.add(json_to_" ++ (toNimName name) ++ "(e))"
                                , (indent (indentDelta * 2)) ++ "else:"
                                , (indent (indentDelta * 3)) ++ "result = @[]"
                                , (indent (indentDelta * 1)) ++ "else:"
                                , (indent (indentDelta * 2)) ++ "result = @[]"
                                ]
-              where
-                generateParsingFromJson : Nat -> Parameter -> String
-                generateParsingFromJson idt (n, t, _)
-                  = (indent idt) ++ (toNimName n) ++ " = " ++ (toNimFromJson ("e{\"" ++ n ++ "\"}") t)
-
-                generateInitialingObject : List Parameter -> String
-                generateInitialingObject ps
-                  = List.join ", " $ map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) ps
 
         generateEvents : String -> String -> List1 Event -> String
         generateEvents pre name evts
@@ -184,13 +191,6 @@ toNim conf fsm
                     generateSignatureBody' (n, (TList _), _)            = "\"" ++ n ++ "=\" & $ %" ++ (toNimName n)
                     generateSignatureBody' (n, (TDict _ _), _)          = "\"" ++ n ++ "=\" & $ %" ++ (toNimName n)
                     generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
-
-loadFsm : String -> Either String Fsm
-loadFsm src
-  = do (sexp, _) <- mapError parseErrorToString $ parseSExp src
-       (fsm, _) <- mapError parseErrorToString $ analyse sexp
-       fsm' <- mapError checkersErrorToString $ check fsm defaultCheckingRules
-       pure fsm'
 
 doWork : AppConfig -> IO ()
 doWork conf
