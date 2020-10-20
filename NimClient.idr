@@ -96,7 +96,8 @@ toNim conf fsm
           = let params' = ("fsmid", TPrimType PTULong, Nothing) :: params in
                 List.join "\n" [ "proc json_to_" ++ (toNimName name) ++ "*(obj: JsonNode): " ++ pre ++ " ="
                                , (indent indentDelta) ++ "let"
-                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) params'
+                               , (indent (indentDelta * 2) ++ "fsmid = obj{\"fsmid\"}.getStr.parseBiggestUInt")
+                               , List.join "\n" $ map (generateFromJson (indentDelta * 2)) params
                                , (indent indentDelta) ++ "result = " ++ pre ++ "(" ++ (List.join ", " (map (\(n, _, _) => (toNimName n) ++ ": " ++ (toNimName n)) params')) ++ ")"
 
                                ]
@@ -140,11 +141,11 @@ toNim conf fsm
           = join "\n\n" $ map (generateEvent pre name) evts
           where
             generateEvent : String -> String -> Event -> String
-            generateEvent pre name (MkEvent ename params metas)
-              = let isCreator = (MVString "true") == (fromMaybe (MVString "false") $ lookup "creator" metas)
-                    params' = if isCreator then params else ("fsmid", (TPrimType PTULong) , Nothing) :: (the (List Parameter) params)
-                    query = (if isCreator then "\"/" ++ name ++ "/" ++ ename ++ "\"" else ("\"/" ++ name ++ "/\" & $fsmid & \"/" ++ ename ++ "\"")) in
-                    List.join "\n" $ List.filter nonblank [ "proc " ++ (toNimName ename) ++ "*(self: Caller, " ++ (generateParametersSignature params') ++ "): " ++ (if isCreator then "Option[uint64]" else "bool") ++ " ="
+            generateEvent pre name evt@(MkEvent ename params metas)
+              = let fsmIdStyle = fsmIdStyleOfEvent evt
+                    params' = ("self", (TRecord "Caller" []), Nothing) :: (if fsmIdStyle == FsmIdStyleUrl then ("fsmid", (TPrimType PTULong) , Nothing) :: (the (List Parameter) params) else params)
+                    query = (if fsmIdStyle == FsmIdStyleUrl then ("\"/" ++ name ++ "/\" & $fsmid & \"/" ++ ename ++ "\"") else ("\"/" ++ name ++ "/" ++ ename ++ "\"")) in
+                    List.join "\n" $ List.filter nonblank [ "proc " ++ (toNimName ename) ++ "*(" ++ (generateParametersSignature params') ++ "): " ++ (if fsmIdStyle == FsmIdStyleGenerate then "Option[uint64]" else "bool") ++ " ="
                                                           , (indent indentDelta) ++ "let"
                                                           , (indent (indentDelta * 2)) ++ "client = newHttpClient()"
                                                           , (indent (indentDelta * 2)) ++ "date = getTime().format(\"ddd, dd MMM yyyy HH:mm:ss \'GMT\'\", utc())"
@@ -157,18 +158,18 @@ toNim conf fsm
                                                           , (indent (indentDelta * 2)) ++ "})"
                                                           , (indent (indentDelta * 2)) ++ "body = newJObject()"
                                                           , List.join "\n" $ map (generateJsonInitializer indentDelta) params
-                                                          , (indent (indentDelta * 1)) ++ "let response = client.request(\"http://$1:$2/" ++ name ++ "/" ++ (if isCreator then ename else "$3/" ++ ename) ++ "\" % [self.host, $self.port" ++ (if isCreator then "" else ", $fsmid") ++ "], \"POST\", $body, headers = headers)"
+                                                          , (indent (indentDelta * 1)) ++ "let response = client.request(\"http://$1:$2/" ++ name ++ "/" ++ (if fsmIdStyle == FsmIdStyleUrl then "$3/" ++ ename else ename) ++ "\" % [self.host, $self.port" ++ (if fsmIdStyle == FsmIdStyleUrl then ", $fsmid" else "") ++ "], \"POST\", $body, headers = headers)"
                                                           , (indent indentDelta) ++ "client.close"
                                                           , (indent indentDelta) ++ "if response.code == Http200:"
                                                           , (indent (indentDelta * 2)) ++ "let"
                                                           , (indent (indentDelta * 3)) ++ "respbody = response.body.parseJson"
                                                           , (indent (indentDelta * 3)) ++ "code = respbody{\"code\"}.getInt"
                                                           , (indent (indentDelta * 2)) ++ "if code == 200:"
-                                                          , if isCreator then (indent (indentDelta * 3)) ++ "result = some[uint64](respbody{\"payload\"}.getStr.parseBiggestUInt)"  else (indent (indentDelta * 3)) ++ "result = respbody{\"payload\"}.getStr == \"Okay\""
+                                                          , if fsmIdStyle == FsmIdStyleGenerate then (indent (indentDelta * 3)) ++ "result = some[uint64](respbody{\"payload\"}.getStr.parseBiggestUInt)"  else (indent (indentDelta * 3)) ++ "result = respbody{\"payload\"}.getStr == \"Okay\""
                                                           , (indent (indentDelta * 2)) ++ "else:"
-                                                          , if isCreator then (indent (indentDelta * 3)) ++ "result = none(uint64)" else (indent (indentDelta * 3)) ++ "result = false"
+                                                          , if fsmIdStyle == FsmIdStyleGenerate then (indent (indentDelta * 3)) ++ "result = none(uint64)" else (indent (indentDelta * 3)) ++ "result = false"
                                                           , (indent indentDelta) ++ "else:"
-                                                          , if isCreator then (indent (indentDelta * 2)) ++ "result = none(uint64)" else (indent (indentDelta * 2)) ++ "result = false"
+                                                          , if fsmIdStyle == FsmIdStyleGenerate then (indent (indentDelta * 2)) ++ "result = none(uint64)" else (indent (indentDelta * 2)) ++ "result = false"
                                                           ]
               where
                 generateParametersSignature : List Parameter -> String
